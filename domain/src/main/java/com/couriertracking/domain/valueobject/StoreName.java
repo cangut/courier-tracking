@@ -7,4 +7,8 @@ public record StoreName(String value) {
             throw new IllegalArgumentException("storeName must not be blank");
         }
     }
+
+    public static StoreName of(String value) {
+        return new StoreName(value);
+    }
 }

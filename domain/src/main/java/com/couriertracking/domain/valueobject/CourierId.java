@@ -7,4 +7,8 @@ public record CourierId(String value) {
             throw new IllegalArgumentException("courierId must not be blank");
         }
     }
+
+    public static CourierId of(String value) {
+        return new CourierId(value);
+    }
 }
