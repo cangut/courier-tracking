@@ -3,7 +3,7 @@ package com.couriertracking.domain.port.out;
 import com.couriertracking.domain.valueobject.CourierId;
 import com.couriertracking.domain.valueobject.StoreName;
 
-public interface CourierStoreEntranceRepository {
+public interface CourierStoreEntryRepository {
 
-    boolean isValidEntrance(CourierId courierId, StoreName storeName);
+    boolean isValidEntry(CourierId courierId, StoreName storeName);
 }
