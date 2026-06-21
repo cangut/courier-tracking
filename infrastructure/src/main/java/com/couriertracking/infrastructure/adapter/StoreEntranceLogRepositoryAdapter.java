@@ -28,8 +28,8 @@ public class StoreEntranceLogRepositoryAdapter implements StoreEntranceLogReposi
     }
 
     @Override
-    public List<EntranceLog> findByCourier(CourierId courierId) {
-        return repository.findByCourierId(courierId.value()).stream()
+    public List<EntranceLog> findByCourierSince(CourierId courierId, OccurredAt since) {
+        return repository.findByCourierIdAndOccurredAtGreaterThanEqual(courierId.value(), since.value()).stream()
                 .map(entranceLogEntity -> new EntranceLog(
                         new CourierId(entranceLogEntity.getCourierId()),
                         new StoreName(entranceLogEntity.getStoreName()),

@@ -314,6 +314,8 @@ curl http://localhost:8080/api/couriers/courier-1/total-distance
 GET /api/couriers/{courierId}/entrances
 ```
 
+Returns the courier's entrances from the **last 7 days** only (most recent first). The window bounds the Cassandra partition scan so the endpoint stays fast as a courier's history grows.
+
 **Response** `200 OK` — array, most recent first:
 
 ```json
@@ -414,7 +416,9 @@ paths:
   /api/couriers/{courierId}/entrances:
     get:
       summary: Get store entrances
-      description: Returns the courier's recorded store entrances, most recent first (empty if unknown).
+      description: >-
+        Returns the courier's store entrances from the last 7 days, most recent first (empty if
+        unknown). The time window bounds the Cassandra partition scan.
       operationId: getStoreEntrances
       parameters:
         - $ref: '#/components/parameters/CourierId'
@@ -656,5 +660,6 @@ The REST integration tests use Spring **MockMvc** with mocked use cases — they
 - **Hexagonal + module isolation.** The `domain` and `application` modules have **zero** framework dependencies, so business logic is unit‑testable in milliseconds and the database/web technology can change without touching the core.
 - **Redis for hot, mutating state.** The courier aggregate (total distance + last position) is high‑frequency, last‑write‑wins data — a perfect fit for Redis. It is stored as a **single value per courier** (`courier:{id}`), the serialized aggregate, so its invariants are persisted as one unit rather than scattered across keys; the application service just does *load → `moveTo` → save*. (Per‑courier updates are effectively sequential; if strictly atomic accumulation under concurrent writes for the same courier is ever needed, the adapter can move to `WATCH/MULTI` or a Lua script without changing the `CourierRepository` port.) The 60 s re‑entry rule is implemented as an atomic `SET key value NX EX 60`, which doubles as both the de‑dup marker and its own expiry.
 - **Cassandra for an append‑only history.** Store entrances are write‑heavy, time‑ordered, and queried by courier — modelled as a partition per courier with `occurred_at DESC` clustering so the read API gets newest‑first ordering for free.
+- **Bounded entrance reads (last 7 days).** Cassandra has no offset pagination, so instead of fetching a courier's whole (ever‑growing) partition, `/entrances` issues a clustering‑column slice — `WHERE courier_id = ? AND occurred_at >= now − 7d` — which reads only the recent rows, needs no `ALLOW FILTERING`, and returns newest‑first for free. The window lives in `GetStoreEntrancesService.LOOKBACK`.
 - **Direct entrance-log write.** The command path appends each entrance straight to Cassandra through the `StoreEntranceLogRepository` port, gated by the Redis re‑entry lock — keeping the write use case's persistence in one place.
 - **Static store catalog cached in Caffeine.** The five stores rarely change, so they are loaded once from `stores.json` and cached in memory rather than hitting a database on every location update.
