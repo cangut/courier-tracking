@@ -18,7 +18,13 @@ spring:
 server:
   port: 8080
 
-# Where the static Migros store catalog is loaded from (Caffeine cache source).
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+
 courier-tracking:
   stores-resource: classpath:stores.json
 
