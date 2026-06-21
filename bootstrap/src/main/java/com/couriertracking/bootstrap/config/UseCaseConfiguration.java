@@ -9,7 +9,6 @@ import com.couriertracking.domain.port.in.GetTotalTravelDistanceUseCase;
 import com.couriertracking.domain.port.in.ReceiveCourierLocationUseCase;
 import com.couriertracking.domain.port.out.*;
 import com.couriertracking.domain.service.DistanceCalculator;
-import com.couriertracking.domain.service.EntranceDetector;
 import com.couriertracking.domain.service.HaversineDistanceCalculator;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -23,25 +22,18 @@ public class UseCaseConfiguration {
     }
 
     @Bean
-    public EntranceDetector entranceDetector(DistanceCalculator distanceCalculator) {
-        return new EntranceDetector(distanceCalculator);
-    }
-
-    @Bean
-    public ReceiveCourierLocationUseCase receiveCourierLocationUseCase(StoreRepository storeRepository,
+    public ReceiveCourierLocationUseCase receiveCourierLocationUseCase(CourierRepository courierRepository,
                                                                        DistanceCalculator distanceCalculator,
-                                                                       EntranceDetector entranceDetector,
-                                                                       CourierStoreEntryRepository courierStoreEntryRepository,
-                                                                       LastPositionRepository lastPositionRepository,
-                                                                       DistanceCounter distanceCounter,
+                                                                       StoreRepository storeRepository,
+                                                                       StoreEntranceLockRepository storeEntranceLockRepository,
                                                                        DomainEventPublisher eventPublisher) {
-        return new ReceiveCourierLocationService(storeRepository, distanceCalculator, entranceDetector,
-                courierStoreEntryRepository, lastPositionRepository, distanceCounter, eventPublisher);
+        return new ReceiveCourierLocationService(courierRepository, distanceCalculator, storeRepository,
+                storeEntranceLockRepository, eventPublisher);
     }
 
     @Bean
-    public GetTotalTravelDistanceUseCase getTotalTravelDistanceUseCase(DistanceCounter distanceCounter) {
-        return new GetTotalTravelDistanceService(distanceCounter);
+    public GetTotalTravelDistanceUseCase getTotalTravelDistanceUseCase(CourierRepository courierRepository) {
+        return new GetTotalTravelDistanceService(courierRepository);
     }
 
     @Bean

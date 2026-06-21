@@ -6,41 +6,31 @@ import com.couriertracking.domain.event.DomainEventPublisher;
 import com.couriertracking.domain.event.StoreEntranceDetected;
 import com.couriertracking.domain.port.in.ReceiveCourierLocationCommand;
 import com.couriertracking.domain.port.in.ReceiveCourierLocationUseCase;
-import com.couriertracking.domain.port.out.CourierStoreEntryRepository;
-import com.couriertracking.domain.port.out.DistanceCounter;
-import com.couriertracking.domain.port.out.LastPositionRepository;
+import com.couriertracking.domain.port.out.CourierRepository;
+import com.couriertracking.domain.port.out.StoreEntranceLockRepository;
 import com.couriertracking.domain.port.out.StoreRepository;
 import com.couriertracking.domain.service.DistanceCalculator;
-import com.couriertracking.domain.service.EntranceDetector;
 import com.couriertracking.domain.valueobject.CourierId;
-import com.couriertracking.domain.valueobject.Distance;
 import com.couriertracking.domain.valueobject.GeoPoint;
 import com.couriertracking.domain.valueobject.OccurredAt;
 
 public class ReceiveCourierLocationService implements ReceiveCourierLocationUseCase {
 
-    private final StoreRepository storeRepository;
+    private final CourierRepository courierRepository;
     private final DistanceCalculator distanceCalculator;
-    private final EntranceDetector entranceDetector;
-    private final CourierStoreEntryRepository courierStoreEntryRepository;
-    private final LastPositionRepository lastPositionRepository;
-    private final DistanceCounter distanceCounter;
+    private final StoreRepository storeRepository;
+    private final StoreEntranceLockRepository storeEntranceLockRepository;
     private final DomainEventPublisher domainEventPublisher;
 
-
-    public ReceiveCourierLocationService(StoreRepository storeRepository,
+    public ReceiveCourierLocationService(CourierRepository courierRepository,
                                          DistanceCalculator distanceCalculator,
-                                         EntranceDetector entranceDetector,
-                                         CourierStoreEntryRepository courierStoreEntryRepository,
-                                         LastPositionRepository lastPositionRepository,
-                                         DistanceCounter distanceCounter,
+                                         StoreRepository storeRepository,
+                                         StoreEntranceLockRepository storeEntranceLockRepository,
                                          DomainEventPublisher domainEventPublisher) {
-        this.storeRepository = storeRepository;
+        this.courierRepository = courierRepository;
         this.distanceCalculator = distanceCalculator;
-        this.entranceDetector = entranceDetector;
-        this.courierStoreEntryRepository = courierStoreEntryRepository;
-        this.lastPositionRepository = lastPositionRepository;
-        this.distanceCounter = distanceCounter;
+        this.storeRepository = storeRepository;
+        this.storeEntranceLockRepository = storeEntranceLockRepository;
         this.domainEventPublisher = domainEventPublisher;
     }
 
@@ -50,16 +40,16 @@ public class ReceiveCourierLocationService implements ReceiveCourierLocationUseC
         GeoPoint position = new GeoPoint(command.lat(), command.lng());
         OccurredAt occurredAt = OccurredAt.of(command.occurredAt());
 
-        Courier courier = new Courier(courierId, lastPositionRepository.find(courierId).orElse(null));
-        Distance increment = courier.moveTo(position, distanceCalculator);
-        distanceCounter.increment(courierId, increment);
-        lastPositionRepository.save(courierId, position);
+        Courier courier = courierRepository.find(courierId).orElseGet(() -> Courier.startingAt(courierId));
+        courier.addStores(storeRepository.findAll());
+        courier.moveTo(position, distanceCalculator);
+        courierRepository.save(courier);
 
-        for (Store store : entranceDetector.detectEntrance(position, storeRepository.findAll())) {
-            if (courierStoreEntryRepository.isValidEntry(courierId, store.name())) {
-                domainEventPublisher.publish(
-                        new StoreEntranceDetected(courierId, store.name(), position, occurredAt));
+        for (Store store : courier.getStores()) {
+            if (storeEntranceLockRepository.registerIfAbsent(courier.id(), store.name())) {
+                domainEventPublisher.publish(new StoreEntranceDetected(courierId, store.name(), position, occurredAt));
             }
         }
     }
+
 }
