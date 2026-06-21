@@ -49,7 +49,7 @@ The known stores are a small, static catalog of five Istanbul Migros branches lo
 | # | Rule | Where it lives |
 |---|------|----------------|
 | 1 | A store **entrance** is detected when the courier is within **100 m** of a store, measured with the **Haversine** great‑circle formula. | [`Courier.moveTo`](domain/src/main/java/com/couriertracking/domain/aggregate/Courier.java) (keeps the stores within `Courier.ENTRANCE_RADIUS`), [`HaversineDistanceCalculator`](domain/src/main/java/com/couriertracking/domain/service/HaversineDistanceCalculator.java) |
-| 2 | **Re‑entry de‑duplication:** if a courier enters the *same* store again **within 60 seconds**, it is **not** logged a second time. Leaving and coming back after the window *is* a new entrance. | [`ReceiveCourierLocationService`](application/src/main/java/com/couriertracking/application/command/ReceiveCourierLocationService.java) (gates publishing on the lock) via [`StoreEntranceLockRepository`](domain/src/main/java/com/couriertracking/domain/port/out/StoreEntranceLockRepository.java) → [`StoreEntranceLockRepositoryAdapter`](infrastructure/src/main/java/com/couriertracking/infrastructure/adapter/StoreEntranceLockRepositoryAdapter.java) (Redis `SET key value NX EX 60`; the adapter owns the 60 s TTL) |
+| 2 | **Re‑entry de‑duplication:** if a courier enters the *same* store again **within 60 seconds**, it is **not** logged a second time. Leaving and coming back after the window *is* a new entrance. | [`ReceiveCourierLocationService`](application/src/main/java/com/couriertracking/application/command/ReceiveCourierLocationService.java) (gates the entrance write on the lock) via [`StoreEntranceLockRepository`](domain/src/main/java/com/couriertracking/domain/port/out/StoreEntranceLockRepository.java) → [`StoreEntranceLockRepositoryAdapter`](infrastructure/src/main/java/com/couriertracking/infrastructure/adapter/StoreEntranceLockRepositoryAdapter.java) (Redis `SET key value NX EX 60`; the adapter owns the 60 s TTL) |
 | 3 | **Total distance** is the running sum of Haversine distances between consecutive reported positions for a courier. The very first position adds **0 m** (there is no previous point to measure from). The total is accumulated **inside the `Courier` aggregate** and persisted with it. | [`Courier.moveTo`](domain/src/main/java/com/couriertracking/domain/aggregate/Courier.java), [`CourierRepositoryAdapter`](infrastructure/src/main/java/com/couriertracking/infrastructure/adapter/CourierRepositoryAdapter.java) |
 | 4 | A single reported position may be near **several** stores at once — each qualifying store produces its own (de‑duplicated) entrance. | [`ReceiveCourierLocationService`](application/src/main/java/com/couriertracking/application/command/ReceiveCourierLocationService.java) |
 | 5 | `latitude` and `longitude` are **required**; coordinates must be valid (`lat ∈ [-90, 90]`, `lng ∈ [-180, 180]`). `occurredAt` is optional and defaults to the server's current time. | [`CourierRestController`](infrastructure/src/main/java/com/couriertracking/infrastructure/api/CourierRestController.java), [`GeoPoint`](domain/src/main/java/com/couriertracking/domain/valueobject/GeoPoint.java) |
@@ -77,25 +77,22 @@ flowchart TB
         REDIS_A["Redis adapters<br/>courier aggregate · re-entry"]
         CASS_A["Cassandra adapter<br/>entrance history"]
         STORE_A["Store catalog adapter<br/>(stores.json + Caffeine)"]
-        EVT["Spring event publisher<br/>+ entrance-log projector"]
     end
 
     REST --> APP --> DOM
     APP -->|out ports| REDIS_A
     APP -->|out ports| CASS_A
     APP -->|out ports| STORE_A
-    APP -->|out port| EVT
-    EVT -.->|StoreEntranceDetected| CASS_A
 ```
 
 **Module dependency direction:** `bootstrap → infrastructure → application → domain`
 
-- **`domain`** — pure business model. Aggregate (`Courier` — accumulates total distance and keeps the stores within the 100 m entrance radius) and entity (`Store`), value objects (`GeoPoint`, `Distance`, `CourierId`, …), domain services (`HaversineDistanceCalculator` behind the `DistanceCalculator` port), domain events (`StoreEntranceDetected`), and the **ports** (`port.in` use‑case interfaces, `port.out` repository/gateway interfaces). No framework imports.
+- **`domain`** — pure business model. Aggregate (`Courier` — accumulates total distance and keeps the stores within the 100 m entrance radius) and entity (`Store`), value objects (`GeoPoint`, `Distance`, `CourierId`, …), domain services (`HaversineDistanceCalculator` behind the `DistanceCalculator` port), and the **ports** (`port.in` use‑case interfaces, `port.out` repository/gateway interfaces). No framework imports.
 - **`application`** — orchestrates use cases. Split into **commands** (write side: `ReceiveCourierLocationService`) and **queries** (read side: `GetTotalTravelDistanceService`, `GetStoreEntrancesService`). Depends only on `domain`.
-- **`infrastructure`** — the adapters that implement the ports: REST controller + DTOs, Redis adapters, the Cassandra repository, the `stores.json` loader, and the event publisher/projector. Depends on `application`.
+- **`infrastructure`** — the adapters that implement the ports: REST controller + DTOs, Redis adapters, the Cassandra repository, and the `stores.json` loader. Depends on `application`.
 - **`bootstrap`** — the Spring Boot application entry point and wiring (`UseCaseConfiguration` builds the framework‑free use‑case beans; `CassandraConfig` sets up the keyspace/schema).
 
-**Event‑driven projection (light CQRS):** the write path publishes a `StoreEntranceDetected` domain event; a Spring `@EventListener` ([`StoreEntranceLogProjector`](infrastructure/src/main/java/com/couriertracking/infrastructure/event/StoreEntranceLogProjector.java)) projects it into the Cassandra `store_entrances` table, which the read API later queries.
+**Read/write separation (light CQRS):** the command path appends each entrance straight to Cassandra through the `StoreEntranceLogRepository` port; the read API ([`GetStoreEntrancesService`](application/src/main/java/com/couriertracking/application/query/GetStoreEntrancesService.java)) queries the same `store_entrances` table.
 
 ---
 
@@ -128,7 +125,6 @@ courier-tracking/
 │       ├── entity/Store.java
 │       ├── valueobject/         # GeoPoint, Distance, CourierId, StoreName, OccurredAt, EntranceLog
 │       ├── service/             # DistanceCalculator, HaversineDistanceCalculator
-│       ├── event/               # StoreEntranceDetected, DomainEventPublisher
 │       └── port/
 │           ├── in/              # Use-case interfaces + ReceiveCourierLocationCommand
 │           └── out/             # StoreRepository, CourierRepository,
@@ -142,8 +138,7 @@ courier-tracking/
 ├── infrastructure/              # Adapters that implement the ports
 │   └── src/main/java/com/couriertracking/infrastructure/
 │       ├── api/                 # CourierRestController, GlobalExceptionHandler, dto/
-│       ├── adapter/             # Redis + store-catalog adapters
-│       ├── event/               # SpringDomainEventPublisher, StoreEntranceLogProjector
+│       ├── adapter/             # Redis + store-catalog + entrance-log adapters
 │       └── persistence/cassandra/  # EntranceLogEntity, EntranceLogCassandraRepository
 │
 └── bootstrap/                   # Spring Boot entry point + wiring
@@ -569,8 +564,6 @@ sequenceDiagram
     participant S as ReceiveCourierLocationService
     participant CR as Redis: courier aggregate
     participant RE as Redis: entrance lock (NX EX 60)
-    participant EV as Spring event bus
-    participant PR as EntranceLogProjector
     participant CS as Cassandra: store_entrances
 
     C->>R: POST /api/couriers/location
@@ -582,11 +575,9 @@ sequenceDiagram
     loop each store within 100 m
         S->>RE: registerIfAbsent(courier, store)  (SET NX EX 60)
         alt first entry within window
-            S->>EV: publish StoreEntranceDetected
-            EV->>PR: on(event)
-            PR->>CS: append entrance log
+            S->>CS: append entrance log
         else duplicate within 60 s
-            Note over S,RE: skipped (no event)
+            Note over S,RE: skipped (no log)
         end
     end
     R-->>C: 202 Accepted
@@ -640,8 +631,8 @@ mvn -pl infrastructure test    # adapters + REST layer
 
 | Layer | Tests | Focus |
 |-------|-------|-------|
-| Domain | `GeoPointTest`, `DistanceTest`, `CourierIdTest`, `StoreNameTest`, `OccurredAtTest`, `EntranceLogTest`, `CourierTest`, `HaversineDistanceCalculatorTest`, `StoreEntranceDetectedTest` | Value‑object validation, Haversine accuracy, 100 m store filtering, distance accumulation. |
-| Application | `ReceiveCourierLocationServiceTest` | The write‑path orchestration with all ports mocked (distance increment, save, entrance publish, de‑dup branch). |
+| Domain | `GeoPointTest`, `DistanceTest`, `CourierIdTest`, `StoreNameTest`, `OccurredAtTest`, `EntranceLogTest`, `CourierTest`, `HaversineDistanceCalculatorTest` | Value‑object validation, Haversine accuracy, 100 m store filtering, distance accumulation. |
+| Application | `ReceiveCourierLocationServiceTest` | The write‑path orchestration with all ports mocked (distance increment, save, entrance append, de‑dup branch). |
 | Infrastructure | `StoreRepositoryAdapterTest`, `CourierRestControllerTest`, `GlobalExceptionHandlerTest` | Store‑catalog loading, REST endpoints via MockMvc (202 / 400 / read APIs), error mapping. |
 
 The REST integration tests use Spring **MockMvc** with mocked use cases — they need **no** running Redis or Cassandra.
@@ -665,5 +656,5 @@ The REST integration tests use Spring **MockMvc** with mocked use cases — they
 - **Hexagonal + module isolation.** The `domain` and `application` modules have **zero** framework dependencies, so business logic is unit‑testable in milliseconds and the database/web technology can change without touching the core.
 - **Redis for hot, mutating state.** The courier aggregate (total distance + last position) is high‑frequency, last‑write‑wins data — a perfect fit for Redis. It is stored as a **single value per courier** (`courier:{id}`), the serialized aggregate, so its invariants are persisted as one unit rather than scattered across keys; the application service just does *load → `moveTo` → save*. (Per‑courier updates are effectively sequential; if strictly atomic accumulation under concurrent writes for the same courier is ever needed, the adapter can move to `WATCH/MULTI` or a Lua script without changing the `CourierRepository` port.) The 60 s re‑entry rule is implemented as an atomic `SET key value NX EX 60`, which doubles as both the de‑dup marker and its own expiry.
 - **Cassandra for an append‑only history.** Store entrances are write‑heavy, time‑ordered, and queried by courier — modelled as a partition per courier with `occurred_at DESC` clustering so the read API gets newest‑first ordering for free.
-- **Event‑driven projection.** The command path emits a `StoreEntranceDetected` domain event; a projector writes it to Cassandra. This keeps the write use case free of persistence detail and makes it easy to add more reactions (notifications, analytics) later.
+- **Direct entrance-log write.** The command path appends each entrance straight to Cassandra through the `StoreEntranceLogRepository` port, gated by the Redis re‑entry lock — keeping the write use case's persistence in one place.
 - **Static store catalog cached in Caffeine.** The five stores rarely change, so they are loaded once from `stores.json` and cached in memory rather than hitting a database on every location update.

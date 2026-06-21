@@ -3,7 +3,6 @@ package com.couriertracking.bootstrap.config;
 import com.couriertracking.application.command.ReceiveCourierLocationService;
 import com.couriertracking.application.query.GetStoreEntrancesService;
 import com.couriertracking.application.query.GetTotalTravelDistanceService;
-import com.couriertracking.domain.event.DomainEventPublisher;
 import com.couriertracking.domain.port.in.GetStoreEntrancesUseCase;
 import com.couriertracking.domain.port.in.GetTotalTravelDistanceUseCase;
 import com.couriertracking.domain.port.in.ReceiveCourierLocationUseCase;
@@ -26,9 +25,9 @@ public class UseCaseConfiguration {
                                                                        DistanceCalculator distanceCalculator,
                                                                        StoreRepository storeRepository,
                                                                        StoreEntranceLockRepository storeEntranceLockRepository,
-                                                                       DomainEventPublisher eventPublisher) {
+                                                                       StoreEntranceLogRepository storeEntranceLogRepository) {
         return new ReceiveCourierLocationService(courierRepository, distanceCalculator, storeRepository,
-                storeEntranceLockRepository, eventPublisher);
+                storeEntranceLockRepository, storeEntranceLogRepository);
     }
 
     @Bean

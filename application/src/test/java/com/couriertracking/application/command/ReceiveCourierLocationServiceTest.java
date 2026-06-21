@@ -2,16 +2,16 @@ package com.couriertracking.application.command;
 
 import com.couriertracking.domain.aggregate.Courier;
 import com.couriertracking.domain.entity.Store;
-import com.couriertracking.domain.event.DomainEventPublisher;
-import com.couriertracking.domain.event.StoreEntranceDetected;
 import com.couriertracking.domain.port.in.ReceiveCourierLocationCommand;
 import com.couriertracking.domain.port.out.CourierRepository;
 import com.couriertracking.domain.port.out.StoreEntranceLockRepository;
+import com.couriertracking.domain.port.out.StoreEntranceLogRepository;
 import com.couriertracking.domain.port.out.StoreRepository;
 import com.couriertracking.domain.service.DistanceCalculator;
 import com.couriertracking.domain.service.HaversineDistanceCalculator;
 import com.couriertracking.domain.valueobject.CourierId;
 import com.couriertracking.domain.valueobject.Distance;
+import com.couriertracking.domain.valueobject.EntranceLog;
 import com.couriertracking.domain.valueobject.GeoPoint;
 import com.couriertracking.domain.valueobject.OccurredAt;
 import com.couriertracking.domain.valueobject.StoreName;
@@ -44,7 +44,7 @@ class ReceiveCourierLocationServiceTest {
     @Mock
     private StoreEntranceLockRepository storeEntranceLockRepository;
     @Mock
-    private DomainEventPublisher domainEventPublisher;
+    private StoreEntranceLogRepository storeEntranceLogRepository;
 
     // Real calculator: the distance/entrance assertions depend on actual Haversine geometry.
     private final DistanceCalculator distanceCalculator = new HaversineDistanceCalculator();
@@ -60,7 +60,7 @@ class ReceiveCourierLocationServiceTest {
     @BeforeEach
     void setUp() {
         service = new ReceiveCourierLocationService(
-                courierRepository, distanceCalculator, storeRepository, storeEntranceLockRepository, domainEventPublisher);
+                courierRepository, distanceCalculator, storeRepository, storeEntranceLockRepository, storeEntranceLogRepository);
     }
 
     @Test
@@ -72,7 +72,7 @@ class ReceiveCourierLocationServiceTest {
         Courier saved = captor.getValue();
         assertThat(saved.lastPosition()).contains(position);
         assertThat(saved.totalDistance()).isEqualTo(Distance.ZERO);
-        verifyNoInteractions(domainEventPublisher, storeEntranceLockRepository);
+        verifyNoInteractions(storeEntranceLockRepository, storeEntranceLogRepository);
     }
 
     @Test
@@ -91,7 +91,7 @@ class ReceiveCourierLocationServiceTest {
     }
 
     @Test
-    void registers_and_publishes_an_entrance_for_a_store_within_range() {
+    void registers_and_logs_an_entrance_for_a_store_within_range() {
         Store store = new Store(StoreName.of("Ataşehir MMM Migros"), position);
         when(storeRepository.findAll()).thenReturn(List.of(store));
         when(storeEntranceLockRepository.registerIfAbsent(eq(courierId), eq(store.name()))).thenReturn(true);
@@ -99,12 +99,12 @@ class ReceiveCourierLocationServiceTest {
         service.receive(command);
 
         verify(storeEntranceLockRepository).registerIfAbsent(courierId, store.name());
-        verify(domainEventPublisher).publish(
-                new StoreEntranceDetected(courierId, store.name(), position, OccurredAt.of(occurredAt)));
+        verify(storeEntranceLogRepository).append(
+                new EntranceLog(courierId, store.name(), position, OccurredAt.of(occurredAt)));
     }
 
     @Test
-    void does_not_publish_when_entrance_is_a_duplicate_within_the_window() {
+    void does_not_log_when_entrance_is_a_duplicate_within_the_window() {
         Store store = new Store(StoreName.of("Ataşehir MMM Migros"), position);
         when(storeRepository.findAll()).thenReturn(List.of(store));
         when(storeEntranceLockRepository.registerIfAbsent(eq(courierId), eq(store.name()))).thenReturn(false);
@@ -112,6 +112,6 @@ class ReceiveCourierLocationServiceTest {
         service.receive(command);
 
         verify(storeEntranceLockRepository).registerIfAbsent(courierId, store.name());
-        verify(domainEventPublisher, never()).publish(any());
+        verify(storeEntranceLogRepository, never()).append(any());
     }
 }
