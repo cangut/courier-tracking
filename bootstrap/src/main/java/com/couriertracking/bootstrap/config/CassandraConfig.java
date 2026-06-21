@@ -50,6 +50,11 @@ public class CassandraConfig extends AbstractCassandraConfiguration {
         return SchemaAction.CREATE_IF_NOT_EXISTS;
     }
 
+    @Override
+    public String[] getEntityBasePackages() {
+        return new String[]{"com.couriertracking.infrastructure.persistence.cassandra"};
+    }
+
 
     @Override
     protected List<CreateKeyspaceSpecification> getKeyspaceCreations() {
