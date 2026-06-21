@@ -2,15 +2,15 @@ package com.couriertracking.application.command;
 
 import com.couriertracking.domain.aggregate.Courier;
 import com.couriertracking.domain.entity.Store;
-import com.couriertracking.domain.event.DomainEventPublisher;
-import com.couriertracking.domain.event.StoreEntranceDetected;
 import com.couriertracking.domain.port.in.ReceiveCourierLocationCommand;
 import com.couriertracking.domain.port.in.ReceiveCourierLocationUseCase;
 import com.couriertracking.domain.port.out.CourierRepository;
 import com.couriertracking.domain.port.out.StoreEntranceLockRepository;
+import com.couriertracking.domain.port.out.StoreEntranceLogRepository;
 import com.couriertracking.domain.port.out.StoreRepository;
 import com.couriertracking.domain.service.DistanceCalculator;
 import com.couriertracking.domain.valueobject.CourierId;
+import com.couriertracking.domain.valueobject.EntranceLog;
 import com.couriertracking.domain.valueobject.GeoPoint;
 import com.couriertracking.domain.valueobject.OccurredAt;
 
@@ -20,18 +20,18 @@ public class ReceiveCourierLocationService implements ReceiveCourierLocationUseC
     private final DistanceCalculator distanceCalculator;
     private final StoreRepository storeRepository;
     private final StoreEntranceLockRepository storeEntranceLockRepository;
-    private final DomainEventPublisher domainEventPublisher;
+    private final StoreEntranceLogRepository storeEntranceLogRepository;
 
     public ReceiveCourierLocationService(CourierRepository courierRepository,
                                          DistanceCalculator distanceCalculator,
                                          StoreRepository storeRepository,
                                          StoreEntranceLockRepository storeEntranceLockRepository,
-                                         DomainEventPublisher domainEventPublisher) {
+                                         StoreEntranceLogRepository storeEntranceLogRepository) {
         this.courierRepository = courierRepository;
         this.distanceCalculator = distanceCalculator;
         this.storeRepository = storeRepository;
         this.storeEntranceLockRepository = storeEntranceLockRepository;
-        this.domainEventPublisher = domainEventPublisher;
+        this.storeEntranceLogRepository = storeEntranceLogRepository;
     }
 
     @Override
@@ -47,9 +47,8 @@ public class ReceiveCourierLocationService implements ReceiveCourierLocationUseC
 
         for (Store store : courier.getStores()) {
             if (storeEntranceLockRepository.registerIfAbsent(courier.id(), store.name())) {
-                domainEventPublisher.publish(new StoreEntranceDetected(courierId, store.name(), position, occurredAt));
+                storeEntranceLogRepository.append(new EntranceLog(courierId, store.name(), position, occurredAt));
             }
         }
     }
-
 }
