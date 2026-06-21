@@ -1,0 +1,48 @@
+services:
+  cassandra:
+    image: cassandra:4.1
+    container_name: courier-cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=courier-cluster
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces'"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+
+  redis:
+    image: redis:7-alpine
+    container_name: courier-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: courier-app
+    ports:
+      - "8080:8080"
+    environment:
+      - CASSANDRA_CONTACT_POINTS=cassandra
+      - CASSANDRA_PORT=9042
+      - CASSANDRA_LOCAL_DATACENTER=datacenter1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      cassandra:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  cassandra-data:
