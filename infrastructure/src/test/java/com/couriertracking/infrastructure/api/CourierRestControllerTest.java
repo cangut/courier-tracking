@@ -61,14 +61,15 @@ class CourierRestControllerTest {
     }
 
     @Test
-    void receive_returns_202_and_forwards_command() throws Exception {
-        String body = "{\"courierId\":\"courier-1\",\"latitude\":40.9923307,"
-                + "\"longitude\":29.1244229,\"occurredAt\":\"2026-06-20T10:15:30Z\"}";
+    void receive_returns_202_and_forwards_command_with_server_timestamp() throws Exception {
+        String body = "{\"courierId\":\"courier-1\",\"latitude\":40.9923307,\"longitude\":29.1244229}";
 
+        Instant before = Instant.now();
         mockMvc.perform(post("/api/couriers/location")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isAccepted());
+        Instant after = Instant.now();
 
         ArgumentCaptor<ReceiveCourierLocationCommand> captor =
                 ArgumentCaptor.forClass(ReceiveCourierLocationCommand.class);
@@ -77,22 +78,7 @@ class CourierRestControllerTest {
         assertThat(command.courierId()).isEqualTo("courier-1");
         assertThat(command.lat()).isEqualTo(40.9923307);
         assertThat(command.lng()).isEqualTo(29.1244229);
-        assertThat(command.occurredAt()).isEqualTo(Instant.parse("2026-06-20T10:15:30Z"));
-    }
-
-    @Test
-    void receive_defaults_occurred_at_when_absent() throws Exception {
-        String body = "{\"courierId\":\"courier-1\",\"latitude\":40.9923307,\"longitude\":29.1244229}";
-
-        mockMvc.perform(post("/api/couriers/location")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(body))
-                .andExpect(status().isAccepted());
-
-        ArgumentCaptor<ReceiveCourierLocationCommand> captor =
-                ArgumentCaptor.forClass(ReceiveCourierLocationCommand.class);
-        verify(receiveCourierLocationUseCase).receive(captor.capture());
-        assertThat(captor.getValue().occurredAt()).isNotNull();
+        assertThat(command.occurredAt()).isBetween(before, after);
     }
 
     @Test

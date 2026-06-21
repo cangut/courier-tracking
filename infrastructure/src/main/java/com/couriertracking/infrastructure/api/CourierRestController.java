@@ -47,9 +47,8 @@ public class CourierRestController {
         if (request.latitude() == null || request.longitude() == null) {
             throw new IllegalArgumentException("latitude and longitude are required");
         }
-        Instant occurredAt = request.occurredAt() != null ? request.occurredAt() : Instant.now();
         receiveCourierLocationUseCase.receive(new ReceiveCourierLocationCommand(
-                request.courierId(), request.latitude(), request.longitude(), occurredAt));
+                request.courierId(), request.latitude(), request.longitude(), Instant.now()));
     }
 
     @Operation(summary = "Get total travel distance",
