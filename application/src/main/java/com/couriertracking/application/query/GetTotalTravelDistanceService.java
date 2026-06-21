@@ -1,19 +1,21 @@
 package com.couriertracking.application.query;
 
 import com.couriertracking.domain.port.in.GetTotalTravelDistanceUseCase;
-import com.couriertracking.domain.port.out.DistanceCounter;
+import com.couriertracking.domain.port.out.CourierRepository;
 import com.couriertracking.domain.valueobject.CourierId;
 
 public class GetTotalTravelDistanceService implements GetTotalTravelDistanceUseCase {
 
-    private final DistanceCounter distanceCounter;
+    private final CourierRepository courierRepository;
 
-    public GetTotalTravelDistanceService(DistanceCounter distanceCounter) {
-        this.distanceCounter = distanceCounter;
+    public GetTotalTravelDistanceService(CourierRepository courierRepository) {
+        this.courierRepository = courierRepository;
     }
 
     @Override
     public Double getTotalTravelDistance(String courierId) {
-        return distanceCounter.total(CourierId.of(courierId)).meters();
+        return courierRepository.find(CourierId.of(courierId))
+                .map(courier -> courier.totalDistance().meters())
+                .orElse(0.0);
     }
 }

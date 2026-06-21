@@ -1,24 +1,24 @@
 package com.couriertracking.application.command;
 
+import com.couriertracking.domain.aggregate.Courier;
 import com.couriertracking.domain.entity.Store;
 import com.couriertracking.domain.event.DomainEventPublisher;
 import com.couriertracking.domain.event.StoreEntranceDetected;
 import com.couriertracking.domain.port.in.ReceiveCourierLocationCommand;
-import com.couriertracking.domain.port.out.CourierStoreEntryRepository;
-import com.couriertracking.domain.port.out.DistanceCounter;
-import com.couriertracking.domain.port.out.LastPositionRepository;
+import com.couriertracking.domain.port.out.CourierRepository;
+import com.couriertracking.domain.port.out.StoreEntranceLockRepository;
 import com.couriertracking.domain.port.out.StoreRepository;
 import com.couriertracking.domain.service.DistanceCalculator;
-import com.couriertracking.domain.service.EntranceDetector;
+import com.couriertracking.domain.service.HaversineDistanceCalculator;
 import com.couriertracking.domain.valueobject.CourierId;
 import com.couriertracking.domain.valueobject.Distance;
 import com.couriertracking.domain.valueobject.GeoPoint;
 import com.couriertracking.domain.valueobject.OccurredAt;
 import com.couriertracking.domain.valueobject.StoreName;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -29,7 +29,7 @@ import java.util.Optional;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -38,21 +38,17 @@ import static org.mockito.Mockito.when;
 class ReceiveCourierLocationServiceTest {
 
     @Mock
+    private CourierRepository courierRepository;
+    @Mock
     private StoreRepository storeRepository;
     @Mock
-    private DistanceCalculator distanceCalculator;
-    @Mock
-    private EntranceDetector entranceDetector;
-    @Mock
-    private CourierStoreEntryRepository courierStoreEntryRepository;
-    @Mock
-    private LastPositionRepository lastPositionRepository;
-    @Mock
-    private DistanceCounter distanceCounter;
+    private StoreEntranceLockRepository storeEntranceLockRepository;
     @Mock
     private DomainEventPublisher domainEventPublisher;
 
-    @InjectMocks
+    // Real calculator: the distance/entrance assertions depend on actual Haversine geometry.
+    private final DistanceCalculator distanceCalculator = new HaversineDistanceCalculator();
+
     private ReceiveCourierLocationService service;
 
     private final Instant occurredAt = Instant.parse("2026-06-20T10:15:30Z");
@@ -61,80 +57,61 @@ class ReceiveCourierLocationServiceTest {
     private final ReceiveCourierLocationCommand command =
             new ReceiveCourierLocationCommand("courier-1", 40.9923307, 29.1244229, occurredAt);
 
-    @Test
-    void first_position_increments_zero_distance_and_saves_position() {
-        service.receive(command);
-
-        verify(distanceCounter).increment(courierId, Distance.ZERO);
-        verify(lastPositionRepository).save(courierId, position);
-        verifyNoInteractions(domainEventPublisher);
+    @BeforeEach
+    void setUp() {
+        service = new ReceiveCourierLocationService(
+                courierRepository, distanceCalculator, storeRepository, storeEntranceLockRepository, domainEventPublisher);
     }
 
     @Test
-    void existing_last_position_increments_calculated_distance() {
+    void first_position_saves_new_courier_with_zero_distance_and_no_entrances() {
+        service.receive(command);
+
+        ArgumentCaptor<Courier> captor = ArgumentCaptor.forClass(Courier.class);
+        verify(courierRepository).save(captor.capture());
+        Courier saved = captor.getValue();
+        assertThat(saved.lastPosition()).contains(position);
+        assertThat(saved.totalDistance()).isEqualTo(Distance.ZERO);
+        verifyNoInteractions(domainEventPublisher, storeEntranceLockRepository);
+    }
+
+    @Test
+    void existing_courier_accumulates_distance_onto_running_total() {
         GeoPoint last = new GeoPoint(40.0, 29.0);
-        when(lastPositionRepository.find(courierId)).thenReturn(Optional.of(last));
-        when(distanceCalculator.distance(last, position)).thenReturn(Distance.ofMeters(250.0));
+        Courier existing = new Courier(courierId, last, Distance.ofMeters(1000.0));
+        when(courierRepository.find(courierId)).thenReturn(Optional.of(existing));
 
         service.receive(command);
 
-        verify(distanceCounter).increment(courierId, Distance.ofMeters(250.0));
-        verify(lastPositionRepository).save(courierId, position);
+        ArgumentCaptor<Courier> captor = ArgumentCaptor.forClass(Courier.class);
+        verify(courierRepository).save(captor.capture());
+        Courier saved = captor.getValue();
+        assertThat(saved.lastPosition()).contains(position);
+        assertThat(saved.totalDistance().meters()).isGreaterThan(1000.0);
     }
 
     @Test
-    void publishes_event_when_entrance_is_valid() {
-        Store store = new Store(new StoreName("Ataşehir MMM Migros"), new GeoPoint(40.9920, 29.1240));
-        when(entranceDetector.detectEntrance(eq(position), any())).thenReturn(List.of(store));
-        when(courierStoreEntryRepository.isValidEntry(courierId, store.name())).thenReturn(true);
-
-        service.receive(command);
-
-        ArgumentCaptor<StoreEntranceDetected> captor = ArgumentCaptor.forClass(StoreEntranceDetected.class);
-        verify(domainEventPublisher).publish(captor.capture());
-        StoreEntranceDetected published = captor.getValue();
-        assertThat(published.courierId()).isEqualTo(courierId);
-        assertThat(published.storeName()).isEqualTo(store.name());
-        assertThat(published.location()).isEqualTo(position);
-        assertThat(published.occurredAt()).isEqualTo(OccurredAt.of(occurredAt));
-    }
-
-    @Test
-    void does_not_publish_when_entry_is_invalid() {
-        Store store = new Store(new StoreName("Ataşehir MMM Migros"), new GeoPoint(40.9920, 29.1240));
-        when(entranceDetector.detectEntrance(eq(position), any())).thenReturn(List.of(store));
-        when(courierStoreEntryRepository.isValidEntry(courierId, store.name())).thenReturn(false);
-
-        service.receive(command);
-
-        verifyNoInteractions(domainEventPublisher);
-    }
-
-    @Test
-    void publishes_only_valid_entries_for_multiple_stores() {
-        Store valid = new Store(new StoreName("Novada"), new GeoPoint(40.9921, 29.1241));
-        Store invalid = new Store(new StoreName("Beylikdüzü Migros"), new GeoPoint(40.9922, 29.1242));
-        when(entranceDetector.detectEntrance(eq(position), any())).thenReturn(List.of(valid, invalid));
-        when(courierStoreEntryRepository.isValidEntry(courierId, valid.name())).thenReturn(true);
-        when(courierStoreEntryRepository.isValidEntry(courierId, invalid.name())).thenReturn(false);
-
-        service.receive(command);
-
-        ArgumentCaptor<StoreEntranceDetected> captor = ArgumentCaptor.forClass(StoreEntranceDetected.class);
-        verify(domainEventPublisher, times(1)).publish(captor.capture());
-        assertThat(captor.getValue().storeName()).isEqualTo(valid.name());
-    }
-
-    @Test
-    void detects_entrances_against_full_store_catalog() {
-        Store store = new Store(new StoreName("Ataşehir MMM Migros"), new GeoPoint(40.9920, 29.1240));
+    void registers_and_publishes_an_entrance_for_a_store_within_range() {
+        Store store = new Store(StoreName.of("Ataşehir MMM Migros"), position);
         when(storeRepository.findAll()).thenReturn(List.of(store));
-        when(entranceDetector.detectEntrance(eq(position), eq(List.of(store)))).thenReturn(List.of());
+        when(storeEntranceLockRepository.registerIfAbsent(eq(courierId), eq(store.name()))).thenReturn(true);
 
         service.receive(command);
 
-        verify(storeRepository).findAll();
-        verify(entranceDetector).detectEntrance(position, List.of(store));
-        verifyNoInteractions(domainEventPublisher);
+        verify(storeEntranceLockRepository).registerIfAbsent(courierId, store.name());
+        verify(domainEventPublisher).publish(
+                new StoreEntranceDetected(courierId, store.name(), position, OccurredAt.of(occurredAt)));
+    }
+
+    @Test
+    void does_not_publish_when_entrance_is_a_duplicate_within_the_window() {
+        Store store = new Store(StoreName.of("Ataşehir MMM Migros"), position);
+        when(storeRepository.findAll()).thenReturn(List.of(store));
+        when(storeEntranceLockRepository.registerIfAbsent(eq(courierId), eq(store.name()))).thenReturn(false);
+
+        service.receive(command);
+
+        verify(storeEntranceLockRepository).registerIfAbsent(courierId, store.name());
+        verify(domainEventPublisher, never()).publish(any());
     }
 }
