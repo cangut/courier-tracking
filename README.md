@@ -19,7 +19,7 @@ It is built with **Java 21 + Spring Boot 3.5**, organised as a **Hexagonal (Port
 9. [Configuration](#configuration)
 10. [REST API reference](#rest-api-reference)
 11. [OpenAPI specification](#openapi-specification)
-12. [End‑to‑end scenario walkthrough](#end-to-end-scenario-walkthrough)
+12. [End-to-end scenario walkthrough](#end-to-end-scenario-walkthrough)
 13. [How a location update is processed](#how-a-location-update-is-processed)
 14. [Data model](#data-model)
 15. [Testing](#testing)
@@ -52,7 +52,7 @@ The known stores are a small, static catalog of five Istanbul Migros branches lo
 | 2 | **Re‑entry de‑duplication:** if a courier enters the *same* store again **within 60 seconds**, it is **not** logged a second time. Leaving and coming back after the window *is* a new entrance. | [`ReceiveCourierLocationService`](application/src/main/java/com/couriertracking/application/command/ReceiveCourierLocationService.java) (gates the entrance write on the lock) via [`StoreEntranceLockRepository`](domain/src/main/java/com/couriertracking/domain/port/out/StoreEntranceLockRepository.java) → [`StoreEntranceLockRepositoryAdapter`](infrastructure/src/main/java/com/couriertracking/infrastructure/adapter/StoreEntranceLockRepositoryAdapter.java) (Redis `SET key value NX EX 60`; the adapter owns the 60 s TTL) |
 | 3 | **Total distance** is the running sum of Haversine distances between consecutive reported positions for a courier. The very first position adds **0 m** (there is no previous point to measure from). The total is accumulated **inside the `Courier` aggregate** and persisted with it. | [`Courier.moveTo`](domain/src/main/java/com/couriertracking/domain/aggregate/Courier.java), [`CourierRepositoryAdapter`](infrastructure/src/main/java/com/couriertracking/infrastructure/adapter/CourierRepositoryAdapter.java) |
 | 4 | A single reported position may be near **several** stores at once — each qualifying store produces its own (de‑duplicated) entrance. | [`ReceiveCourierLocationService`](application/src/main/java/com/couriertracking/application/command/ReceiveCourierLocationService.java) |
-| 5 | `latitude` and `longitude` are **required**; coordinates must be valid (`lat ∈ [-90, 90]`, `lng ∈ [-180, 180]`). `occurredAt` is optional and defaults to the server's current time. | [`CourierRestController`](infrastructure/src/main/java/com/couriertracking/infrastructure/api/CourierRestController.java), [`GeoPoint`](domain/src/main/java/com/couriertracking/domain/valueobject/GeoPoint.java) |
+| 5 | `latitude` and `longitude` are **required**; coordinates must be valid (`lat ∈ [-90, 90]`, `lng ∈ [-180, 180]`). The entrance timestamp is stamped by the server (`Instant.now()`), not supplied by the client. | [`CourierRestController`](infrastructure/src/main/java/com/couriertracking/infrastructure/api/CourierRestController.java), [`GeoPoint`](domain/src/main/java/com/couriertracking/domain/valueobject/GeoPoint.java) |
 
 > The 100 m radius (`Courier.ENTRANCE_RADIUS`, in the domain) and the 60 s re‑entry window (`StoreEntranceLockRepositoryAdapter.TTL`, in the Redis adapter) are the two knobs that define entrance behaviour.
 
@@ -272,7 +272,8 @@ Content-Type: application/json
 | `courierId` | string | yes | Identifies the courier. |
 | `latitude` | number | **yes** | `[-90, 90]`. |
 | `longitude` | number | **yes** | `[-180, 180]`. |
-| `occurredAt` | string (ISO‑8601 instant) | no | e.g. `2026-06-20T10:15:30Z`. Defaults to server time. |
+
+> The entrance timestamp is **not** part of the request — the server stamps each location with its current time.
 
 **Responses**
 
@@ -287,7 +288,7 @@ Content-Type: application/json
 ```bash
 curl -i -X POST http://localhost:8080/api/couriers/location \
   -H "Content-Type: application/json" \
-  -d '{"courierId":"courier-1","latitude":40.9923307,"longitude":29.1244229,"occurredAt":"2026-06-20T10:15:30Z"}'
+  -d '{"courierId":"courier-1","latitude":40.9923307,"longitude":29.1244229}'
 ```
 
 ### 2. Get total travel distance
@@ -383,7 +384,6 @@ paths:
                   courierId: courier-1
                   latitude: 40.9923307
                   longitude: 29.1244229
-                  occurredAt: '2026-06-20T10:15:30Z'
       responses:
         '202':
           description: Accepted for processing (no body).
@@ -466,11 +466,6 @@ components:
           minimum: -180
           maximum: 180
           example: 29.1244229
-        occurredAt:
-          type: string
-          format: date-time
-          description: ISO-8601 instant. Optional; defaults to server time.
-          example: '2026-06-20T10:15:30Z'
     TotalDistanceResponse:
       type: object
       properties:
@@ -514,26 +509,28 @@ components:
 
 ---
 
-## End‑to‑end scenario walkthrough
+## End-to-end scenario walkthrough
 
 This sequence exercises every business rule against the seeded stores. It assumes the stack is running (`docker compose up --build`).
 
 The store **"Ataşehir MMM Migros"** is at `40.9923307, 29.1244229`.
+
+> Each location is timestamped by the server at the moment it is received, so the de‑duplication window below plays out in **real wall‑clock time** — run the steps in quick succession.
 
 **Step 1 — First location, exactly at the store.** Adds 0 m distance (no previous point) and records one entrance.
 
 ```bash
 curl -X POST http://localhost:8080/api/couriers/location \
   -H "Content-Type: application/json" \
-  -d '{"courierId":"courier-1","latitude":40.9923307,"longitude":29.1244229,"occurredAt":"2026-06-20T10:00:00Z"}'
+  -d '{"courierId":"courier-1","latitude":40.9923307,"longitude":29.1244229}'
 ```
 
-**Step 2 — Move ~50 m away, still within 100 m, within 60 s.** Distance grows, but the entrance is **de‑duplicated** (Rule 2) → still only one entrance.
+**Step 2 — Move ~50 m away, still within 100 m, within 60 s.** Run this **right after** Step 1. Distance grows, but the entrance is **de‑duplicated** (Rule 2) → still only one entrance.
 
 ```bash
 curl -X POST http://localhost:8080/api/couriers/location \
   -H "Content-Type: application/json" \
-  -d '{"courierId":"courier-1","latitude":40.9927800,"longitude":29.1244229,"occurredAt":"2026-06-20T10:00:30Z"}'
+  -d '{"courierId":"courier-1","latitude":40.9927800,"longitude":29.1244229}'
 ```
 
 **Step 3 — Move far away (no store nearby).** Distance grows; no new entrance.
@@ -541,7 +538,7 @@ curl -X POST http://localhost:8080/api/couriers/location \
 ```bash
 curl -X POST http://localhost:8080/api/couriers/location \
   -H "Content-Type: application/json" \
-  -d '{"courierId":"courier-1","latitude":41.0500000,"longitude":29.0200000,"occurredAt":"2026-06-20T10:05:00Z"}'
+  -d '{"courierId":"courier-1","latitude":41.0500000,"longitude":29.0200000}'
 ```
 
 **Step 4 — Check the results.**
@@ -553,7 +550,7 @@ curl http://localhost:8080/api/couriers/courier-1/entrances        # exactly ONE
 
 **Other scenarios to try**
 
-- **Re‑entry after the window:** repeat Step 1 with a later `occurredAt` and after waiting **more than 60 s** in real time (the Redis de‑dup key expires in real time) → a **second** entrance is recorded.
+- **Re‑entry after the window:** wait **more than 60 s** (the Redis de‑dup key expires) and repeat Step 1 → a **second** entrance is recorded.
 - **Missing coordinates:** `POST` a body without `latitude` → `400 Bad Request` with the error envelope.
 - **Multiple couriers:** use a different `courierId`; state (distance, entrances) is fully isolated per courier.
 
