@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: courier-tracking
+  cassandra:
+    contact-points: ${CASSANDRA_CONTACT_POINTS:127.0.0.1}
+    port: ${CASSANDRA_PORT:9042}
+    local-datacenter: ${CASSANDRA_LOCAL_DATACENTER:datacenter1}
+    keyspace-name: courier_tracking
+    request:
+      timeout: 10s
+    connection:
+      init-query-timeout: 20s
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+
+server:
+  port: 8080
+
+# Where the static Migros store catalog is loaded from (Caffeine cache source).
+courier-tracking:
+  stores-resource: classpath:stores.json
+
+logging:
+  level:
+    com.couriertracking: INFO
