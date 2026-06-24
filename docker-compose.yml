@@ -44,5 +44,22 @@ services:
       redis:
         condition: service_healthy
 
+  # Load testing — opt-in via `--profile loadtest`, so a plain `docker compose up`
+  # never starts it. Runs the Locust web UI.
+  locust:
+    image: locustio/locust:2.44.4
+    container_name: courier-locust
+    profiles: ["loadtest"]
+    ports:
+      - "8089:8089"                 # Locust web UI → http://localhost:8089
+    volumes:
+      - ./loadtest:/mnt/locust      # mount the locustfile (and write report.html back to the host)
+    command: >
+      -f /mnt/locust/locustfile.py
+      --host http://app:8080
+    depends_on:
+      app:
+        condition: service_started
+
 volumes:
   cassandra-data:

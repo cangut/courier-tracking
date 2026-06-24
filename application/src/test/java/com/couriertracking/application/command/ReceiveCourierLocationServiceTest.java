@@ -46,7 +46,6 @@ class ReceiveCourierLocationServiceTest {
     @Mock
     private StoreEntranceLogRepository storeEntranceLogRepository;
 
-    // Real calculator: the distance/entrance assertions depend on actual Haversine geometry.
     private final DistanceCalculator distanceCalculator = new HaversineDistanceCalculator();
 
     private ReceiveCourierLocationService service;

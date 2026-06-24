@@ -1,0 +1,151 @@
+openapi: 3.1.0
+info:
+  title: Courier Tracking Service API
+  description: >-
+    Ingests courier GPS locations, accumulates travelled distance, and records
+    store entrances when a courier comes within 100 m of a Migros store.
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local instance
+paths:
+  /api/couriers/location:
+    post:
+      summary: Report a courier location
+      description: >-
+        Accepts a GPS position. Updates the courier's total travelled distance
+        and records a store entrance for every store within 100 m (de-duplicated
+        per store for 60 seconds). The timestamp is assigned by the server.
+      operationId: receiveCourierLocation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LocationRequest'
+            examples:
+              atStore:
+                summary: Courier exactly at Ataşehir MMM Migros
+                value:
+                  courierId: courier-1
+                  latitude: 40.9923307
+                  longitude: 29.1244229
+      responses:
+        '202':
+          description: Accepted for processing (no body).
+        '400':
+          description: Missing or invalid coordinates.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: bad_request
+                message: latitude and longitude are required
+  /api/couriers/{courierId}/total-distance:
+    get:
+      summary: Get total travel distance
+      description: Returns the courier's accumulated distance in metres (0.0 if unknown).
+      operationId: getTotalTravelDistance
+      parameters:
+        - $ref: '#/components/parameters/CourierId'
+      responses:
+        '200':
+          description: The courier's total travelled distance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TotalDistanceResponse'
+              example:
+                courierId: courier-1
+                totalDistanceMeters: 1543.27
+  /api/couriers/{courierId}/entrances:
+    get:
+      summary: Get store entrances
+      description: >-
+        Returns the courier's store entrances from the last 7 days, most recent first (empty if
+        unknown). The time window bounds the Cassandra partition scan.
+      operationId: getStoreEntrances
+      parameters:
+        - $ref: '#/components/parameters/CourierId'
+      responses:
+        '200':
+          description: The courier's store entrances.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/EntranceResponse'
+              example:
+                - storeName: Ataşehir MMM Migros
+                  lat: 40.9923307
+                  lng: 29.1244229
+                  occurredAt: '2026-06-20T10:15:30Z'
+components:
+  parameters:
+    CourierId:
+      name: courierId
+      in: path
+      required: true
+      description: Identifies the courier.
+      schema:
+        type: string
+        example: courier-1
+  schemas:
+    LocationRequest:
+      type: object
+      required: [latitude, longitude]
+      properties:
+        courierId:
+          type: string
+          example: courier-1
+        latitude:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+          example: 40.9923307
+        longitude:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          example: 29.1244229
+    TotalDistanceResponse:
+      type: object
+      properties:
+        courierId:
+          type: string
+          example: courier-1
+        totalDistanceMeters:
+          type: number
+          format: double
+          example: 1543.27
+    EntranceResponse:
+      type: object
+      properties:
+        storeName:
+          type: string
+          example: Ataşehir MMM Migros
+        lat:
+          type: number
+          format: double
+          example: 40.9923307
+        lng:
+          type: number
+          format: double
+          example: 29.1244229
+        occurredAt:
+          type: string
+          format: date-time
+          example: '2026-06-20T10:15:30Z'
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: bad_request
+        message:
+          type: string
+          example: latitude and longitude are required

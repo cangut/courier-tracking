@@ -6,6 +6,66 @@ It is built with **Java 21 + Spring Boot 3.5**, organised as a **Hexagonal (Port
 
 ---
 
+## TL;DR — for reviewers
+
+Everything needed to run and test the service is here; the rest of the document is reference detail.
+
+**Run the service** — app + Redis + Cassandra, app on `:8080`:
+
+```bash
+docker compose up -d --build
+```
+
+Then explore the live API at **http://localhost:8080/swagger-ui.html**.
+
+### Unit tests
+
+Fast, Docker‑free — domain, application, and REST layers. Need **JDK 21**.
+
+```bash
+mvn clean verify
+```
+
+| Layer | Focus |
+|-------|-------|
+| Domain | Value‑object validation, Haversine accuracy, 100 m store filtering, distance accumulation. |
+| Application | Write‑path orchestration with all ports mocked (distance increment, save, entrance append, 60 s de‑dup branch). |
+| Infrastructure | Store‑catalog loading, REST endpoints via MockMvc (202 / 400 / read APIs), error mapping. |
+
+> ⚠️ If `mvn` fails with *"release version 21 not supported"*, your `JAVA_HOME` points at an older JDK — switch it to a JDK 21 install.
+
+### Integration test (real Redis + Cassandra via Testcontainers)
+
+`CourierTrackingIntegrationTest` boots the app against **real** Redis + Cassandra containers and asserts the full vertical: aggregate JSON in Redis, the `SET NX EX` de‑duplication lock, and the Cassandra entrance log. Opt‑in, so the default build stays Docker‑free.
+
+```bash
+mvn verify -Pit        # needs a running Docker daemon; first Cassandra boot ~30–60 s
+```
+
+### Load & stress testing (Locust)
+
+Simulates many couriers emitting GPS pings (write‑heavy) plus reads, loitering near the seeded stores so entrance detection and de‑dup are exercised. Locust runs as a Compose service behind the `loadtest` profile — **no local Python needed**.
+
+```bash
+docker compose --profile loadtest up --build    # stack + Locust UI on :8089
+```
+
+Open **http://localhost:8089**, fill in the fields, and click **Start**:
+
+| Field | Meaning |
+|-------|---------|
+| **Number of users** | Total simultaneous virtual couriers (peak concurrency). |
+| **Ramp up** | How many users are added per second (e.g. 200 users + ramp 20 → peak in 10 s). |
+| **Host** | Target under test — **leave blank** (already wired to `http://app:8080`). |
+| **Runtime** *(Advanced)* | Test duration (e.g. `2m`, `30s`). Blank = run until you press **Stop**. |
+| **Profile** *(Advanced)* | Optional label for this run in the report (e.g. `baseline`). Does not change behaviour. |
+
+> ⚠️ **Leave the Host field blank** (or set it to exactly `http://app:8080`). `http://localhost:8080` fails with `ConnectionRefused(111)` — Locust runs inside a container, where `localhost` is the Locust container, not the app. Don't append a path either (the locustfile already does).
+
+**Sample result (no run needed).** A full Locust HTML report from a **1000‑user / 200‑ramp‑up** run is checked in at [`loadtest/load-test-result-with-1000-user.html`](loadtest/load-test-result-with-1000-user-request-mixed.html). Just open the file in any browser — double‑click it. It shows per‑endpoint RPS, p50/p95/p99 latency, and failure counts for that run.
+
+---
+
 ## Table of Contents
 
 1. [What this service does](#what-this-service-does)
@@ -16,15 +76,12 @@ It is built with **Java 21 + Spring Boot 3.5**, organised as a **Hexagonal (Port
 6. [Prerequisites](#prerequisites)
 7. [Quick start (Docker Compose)](#quick-start-docker-compose)
 8. [Running locally (for development)](#running-locally-for-development)
-9. [Configuration](#configuration)
-10. [REST API reference](#rest-api-reference)
-11. [OpenAPI specification](#openapi-specification)
-12. [End-to-end scenario walkthrough](#end-to-end-scenario-walkthrough)
-13. [How a location update is processed](#how-a-location-update-is-processed)
-14. [Data model](#data-model)
-15. [Testing](#testing)
-16. [Troubleshooting](#troubleshooting)
-17. [Design decisions](#design-decisions)
+9. [REST API reference](#rest-api-reference)
+10. [OpenAPI specification](#openapi-specification)
+11. [End-to-end scenario walkthrough](#end-to-end-scenario-walkthrough)
+12. [How a location update is processed](#how-a-location-update-is-processed)
+13. [Data model](#data-model)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -92,7 +149,7 @@ flowchart TB
 - **`infrastructure`** — the adapters that implement the ports: REST controller + DTOs, Redis adapters, the Cassandra repository, and the `stores.json` loader. Depends on `application`.
 - **`bootstrap`** — the Spring Boot application entry point and wiring (`UseCaseConfiguration` builds the framework‑free use‑case beans; `CassandraConfig` sets up the keyspace/schema).
 
-**Read/write separation (light CQRS):** the command path appends each entrance straight to Cassandra through the `StoreEntranceLogRepository` port; the read API ([`GetStoreEntrancesService`](application/src/main/java/com/couriertracking/application/query/GetStoreEntrancesService.java)) queries the same `store_entrances` table.
+**Read/write separation (Command Query Seperation):** the command path appends each entrance straight to Cassandra through the `StoreEntranceLogRepository` port; the read API ([`GetStoreEntrancesService`](application/src/main/java/com/couriertracking/application/query/GetStoreEntrancesService.java)) queries the same `store_entrances` table.
 
 ---
 
@@ -230,27 +287,7 @@ mvn clean package
 java -jar bootstrap/target/courier-tracking.jar
 ```
 
-The app connects to Redis/Cassandra on `127.0.0.1` by default (see [Configuration](#configuration)), so no extra environment variables are needed when the containers expose the default ports.
-
----
-
-## Configuration
-
-All settings live in [`bootstrap/src/main/resources/application.yml`](bootstrap/src/main/resources/application.yml) and can be overridden with environment variables. Defaults are tuned for **local** use; `docker-compose.yml` overrides the hosts for the **container network**.
-
-| Environment variable | Default | Description |
-|----------------------|---------|-------------|
-| `CASSANDRA_CONTACT_POINTS` | `127.0.0.1` | Cassandra host(s). Compose sets this to `cassandra`. |
-| `CASSANDRA_PORT` | `9042` | Cassandra CQL port. |
-| `CASSANDRA_LOCAL_DATACENTER` | `datacenter1` | Cassandra local DC name. |
-| `REDIS_HOST` | `127.0.0.1` | Redis host. Compose sets this to `redis`. |
-| `REDIS_PORT` | `6379` | Redis port. |
-
-Other fixed settings (in `application.yml`):
-
-- `server.port: 8080` — HTTP port.
-- `spring.cassandra.keyspace-name: courier_tracking` — keyspace (auto‑created, `SimpleStrategy` RF 1).
-- `courier-tracking.stores-resource: classpath:stores.json` — source of the store catalog. Point this at an external file (e.g. `file:/data/stores.json`) to supply your own stores.
+The app connects to Redis/Cassandra on `127.0.0.1` by default (overridable via the `CASSANDRA_CONTACT_POINTS` / `REDIS_HOST` env vars, as `docker-compose.yml` does for the container network), so no extra environment variables are needed when the containers expose the default ports.
 
 ---
 
@@ -349,163 +386,9 @@ The running application serves **interactive API documentation** generated by [s
 
 > 💡 Reviewers: start the stack (`docker compose up --build`), open **http://localhost:8080/swagger-ui.html**, and use **“Try it out”** on each endpoint to call the live service.
 
-The same contract is reproduced below as a static **OpenAPI 3.1** document, so it can be read without running the app. Save it as `openapi.yaml` and open it in any OpenAPI tool — for example the [Swagger Editor](https://editor.swagger.io) — or generate a client with `openapi-generator`.
+A static **OpenAPI 3.1** copy of the same contract is committed at [`openapi.yaml`](openapi.yaml), so it can be read without running the app — open it in the [Swagger Editor](https://editor.swagger.io) or generate a client with `openapi-generator`.
 
-```yaml
-openapi: 3.1.0
-info:
-  title: Courier Tracking Service API
-  description: >-
-    Ingests courier GPS locations, accumulates travelled distance, and records
-    store entrances when a courier comes within 100 m of a Migros store.
-  version: 1.0.0
-servers:
-  - url: http://localhost:8080
-    description: Local instance
-paths:
-  /api/couriers/location:
-    post:
-      summary: Report a courier location
-      description: >-
-        Accepts a GPS position. Updates the courier's total travelled distance
-        and records a store entrance for every store within 100 m (de-duplicated
-        per store for 60 seconds).
-      operationId: receiveCourierLocation
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/LocationRequest'
-            examples:
-              atStore:
-                summary: Courier exactly at Ataşehir MMM Migros
-                value:
-                  courierId: courier-1
-                  latitude: 40.9923307
-                  longitude: 29.1244229
-      responses:
-        '202':
-          description: Accepted for processing (no body).
-        '400':
-          description: Missing or invalid coordinates.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-              example:
-                error: bad_request
-                message: latitude and longitude are required
-  /api/couriers/{courierId}/total-distance:
-    get:
-      summary: Get total travel distance
-      description: Returns the courier's accumulated distance in metres (0.0 if unknown).
-      operationId: getTotalTravelDistance
-      parameters:
-        - $ref: '#/components/parameters/CourierId'
-      responses:
-        '200':
-          description: The courier's total travelled distance.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TotalDistanceResponse'
-              example:
-                courierId: courier-1
-                totalDistanceMeters: 1543.27
-  /api/couriers/{courierId}/entrances:
-    get:
-      summary: Get store entrances
-      description: >-
-        Returns the courier's store entrances from the last 7 days, most recent first (empty if
-        unknown). The time window bounds the Cassandra partition scan.
-      operationId: getStoreEntrances
-      parameters:
-        - $ref: '#/components/parameters/CourierId'
-      responses:
-        '200':
-          description: The courier's store entrances.
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/EntranceResponse'
-              example:
-                - storeName: Ataşehir MMM Migros
-                  lat: 40.9923307
-                  lng: 29.1244229
-                  occurredAt: '2026-06-20T10:15:30Z'
-components:
-  parameters:
-    CourierId:
-      name: courierId
-      in: path
-      required: true
-      description: Identifies the courier.
-      schema:
-        type: string
-        example: courier-1
-  schemas:
-    LocationRequest:
-      type: object
-      required: [latitude, longitude]
-      properties:
-        courierId:
-          type: string
-          example: courier-1
-        latitude:
-          type: number
-          format: double
-          minimum: -90
-          maximum: 90
-          example: 40.9923307
-        longitude:
-          type: number
-          format: double
-          minimum: -180
-          maximum: 180
-          example: 29.1244229
-    TotalDistanceResponse:
-      type: object
-      properties:
-        courierId:
-          type: string
-          example: courier-1
-        totalDistanceMeters:
-          type: number
-          format: double
-          example: 1543.27
-    EntranceResponse:
-      type: object
-      properties:
-        storeName:
-          type: string
-          example: Ataşehir MMM Migros
-        lat:
-          type: number
-          format: double
-          example: 40.9923307
-        lng:
-          type: number
-          format: double
-          example: 29.1244229
-        occurredAt:
-          type: string
-          format: date-time
-          example: '2026-06-20T10:15:30Z'
-    ErrorResponse:
-      type: object
-      properties:
-        error:
-          type: string
-          example: bad_request
-        message:
-          type: string
-          example: latitude and longitude are required
-```
-
-> This static copy is kept in sync by hand with the live `/v3/api-docs` output; the live spec is always the source of truth.
+> The live `/v3/api-docs` output is the source of truth; `openapi.yaml` is a hand-maintained copy for offline reading.
 
 ---
 
@@ -608,38 +491,6 @@ Table `store_entrances` in keyspace `courier_tracking` (auto‑created on startu
 
 ---
 
-## Testing
-
-The project ships with unit and integration tests across every layer.
-
-Run the full suite (build + test) from the root:
-
-```bash
-mvn clean verify
-```
-
-Run the tests for a single module:
-
-```bash
-mvn -pl domain test            # domain model & services
-mvn -pl application test       # use-case orchestration (Mockito)
-mvn -pl infrastructure test    # adapters + REST layer
-```
-
-> ⚠️ Tests compile and run on **JDK 21**. If `mvn test` fails with *"release version 21 not supported"*, your `JAVA_HOME` is pointing at an older JDK — switch it to a 21 install.
-
-**What is covered**
-
-| Layer | Tests | Focus |
-|-------|-------|-------|
-| Domain | `GeoPointTest`, `DistanceTest`, `CourierIdTest`, `StoreNameTest`, `OccurredAtTest`, `EntranceLogTest`, `CourierTest`, `HaversineDistanceCalculatorTest` | Value‑object validation, Haversine accuracy, 100 m store filtering, distance accumulation. |
-| Application | `ReceiveCourierLocationServiceTest` | The write‑path orchestration with all ports mocked (distance increment, save, entrance append, de‑dup branch). |
-| Infrastructure | `StoreRepositoryAdapterTest`, `CourierRestControllerTest`, `GlobalExceptionHandlerTest` | Store‑catalog loading, REST endpoints via MockMvc (202 / 400 / read APIs), error mapping. |
-
-The REST integration tests use Spring **MockMvc** with mocked use cases — they need **no** running Redis or Cassandra.
-
----
-
 ## Troubleshooting
 
 | Symptom | Cause / fix |
@@ -649,14 +500,3 @@ The REST integration tests use Spring **MockMvc** with mocked use cases — they
 | `total-distance` always returns `0.0` | No locations posted for that `courierId`, or Redis is unreachable. Check `REDIS_HOST`/`REDIS_PORT`. |
 | Entrances list is empty after posting near a store | You may be **>100 m** away, or hitting the **60 s** de‑dup window, or Cassandra is unreachable. Verify coordinates and check app logs. |
 | Port `8080`/`9042`/`6379` already in use | Stop the conflicting process or change the published ports in `docker-compose.yml`. |
-
----
-
-## Design decisions
-
-- **Hexagonal + module isolation.** The `domain` and `application` modules have **zero** framework dependencies, so business logic is unit‑testable in milliseconds and the database/web technology can change without touching the core.
-- **Redis for hot, mutating state.** The courier aggregate (total distance + last position) is high‑frequency, last‑write‑wins data — a perfect fit for Redis. It is stored as a **single value per courier** (`courier:{id}`), the serialized aggregate, so its invariants are persisted as one unit rather than scattered across keys; the application service just does *load → `moveTo` → save*. (Per‑courier updates are effectively sequential; if strictly atomic accumulation under concurrent writes for the same courier is ever needed, the adapter can move to `WATCH/MULTI` or a Lua script without changing the `CourierRepository` port.) The 60 s re‑entry rule is implemented as an atomic `SET key value NX EX 60`, which doubles as both the de‑dup marker and its own expiry.
-- **Cassandra for an append‑only history.** Store entrances are write‑heavy, time‑ordered, and queried by courier — modelled as a partition per courier with `occurred_at DESC` clustering so the read API gets newest‑first ordering for free.
-- **Bounded entrance reads (last 7 days).** Cassandra has no offset pagination, so instead of fetching a courier's whole (ever‑growing) partition, `/entrances` issues a clustering‑column slice — `WHERE courier_id = ? AND occurred_at >= now − 7d` — which reads only the recent rows, needs no `ALLOW FILTERING`, and returns newest‑first for free. The window lives in `GetStoreEntrancesService.LOOKBACK`.
-- **Direct entrance-log write.** The command path appends each entrance straight to Cassandra through the `StoreEntranceLogRepository` port, gated by the Redis re‑entry lock — keeping the write use case's persistence in one place.
-- **Static store catalog cached in Caffeine.** The five stores rarely change, so they are loaded once from `stores.json` and cached in memory rather than hitting a database on every location update.
